@@ -34,28 +34,23 @@ Add this entry inside the `"mcpServers"` object:
 
 > **Note**: The `-u` flag forces unbuffered I/O. Required on Windows to prevent pipe deadlocks.
 
----
 
-## 3. Restart Antigravity
-
-Reload the app so it picks up the new server entry.
-
----
-
-## 4. Available Tools
+## 3. Available Tools
 
 | Tool | Description | Key Parameter |
 |---|---|---|
-| `list_vlr_matches` | List recent/upcoming matches | `page` (int, default 1) |
-| `list_vlr_threads` | List recent forum threads | `page` (int, default 1) |
-| `get_vlr_resource` | Fetch full match or thread content | `resource_id` (digits only) |
+| `list_matches` | Discover matches globally or by entity | `page`, `status`, `team_id`, `player_id`, `event_id` |
+| `list_vlr_events` | List ongoing and upcoming events | `page` |
+| `list_vlr_threads` | List recent forum threads | `page` |
+| `get_vlr_resource` | Fetch full context of an entity (match, thread, team, player, event) | `resource_id`, `team_id`, `player_id`, `event_id` |
+| `search_vlr` | Search for players, teams, or events | `query` |
 
 ---
 
 ## 5. Example Agent Flow
 
-1. Call `list_vlr_matches` to discover match IDs.
-2. Call `get_vlr_resource` with a specific ID for full content.
+1. Call `list_matches` to discover match IDs.
+2. Call `get_vlr_resource` with a specific ID (`resource_id` etc) for full content.
 3. Perform sentiment analysis or summarization on the result.
 
 ---

@@ -21,6 +21,7 @@ import re
 import sys
 import asyncio
 import pathlib
+import urllib.parse
 from typing import Optional
 
 import httpx
@@ -76,7 +77,22 @@ FORUM_PAGE_WHITELIST: list[str] = [
 TEAM_PAGE_WHITELIST: list[str] = [
     "team-header", "wf-card", "team-roster-item", "ge-text",
     "team-roster-item-name", "team-roster-item-alias", "team-recent-matches",
-    "team-roster-item-name-real"
+    "team-roster-item-name-real", "wf-module-item", "team-event-item"
+]
+
+NEWS_PAGE_WHITELIST: list[str] = [
+    "article-header", "article-body", "article-title", "article-meta", "article-meta-author",
+    "post", "post-body", "post-header", "post-author", "post-content"
+]
+PLAYER_PAGE_WHITELIST: list[str] = [
+    "player-header", "wf-avatar", "player-real-name", "ge-text-light",
+    "wf-card", "player-event-item", "wf-module-item", "m-item",
+    "m-item-team", "m-item-team-name", "m-item-team-tag", "m-item-event",
+    "m-item-result", "m-item-date", "player-summary-container"
+]
+EVENT_PAGE_WHITELIST: list[str] = [
+    "event-header", "event-desc", "event-desc-item", "wf-title", 
+    "event-desc-subtitle", "wf-ptable", "row", "cell", "wf-card", "ge-text"
 ]
 
 # ── MCP Server ────────────────────────────────────────────────────────────────
@@ -99,7 +115,7 @@ def _extract_classes_from_template(path: pathlib.Path) -> list[str]:
 
 def _load_template_whitelist(filename: str) -> Optional[list[str]]:
     """Load class whitelist from a workspace template if it exists."""
-    path = SCRIPT_DIR / filename
+    path = SCRIPT_DIR / "templates" / filename
     if path.exists():
         classes = _extract_classes_from_template(path)
         return classes if classes else None
@@ -125,6 +141,12 @@ if _TEAM_TEMPLATE_CLASSES:
     sys.stderr.write(f"[vlr-server] team_template.html loaded ({len(_TEAM_TEMPLATE_CLASSES)} classes)\n")
 else:
     sys.stderr.write("[vlr-server] team_template.html not found — using built-in whitelist\n")
+
+_EVENT_TEMPLATE_CLASSES: Optional[list[str]] = _load_template_whitelist("event_template.html")
+if _EVENT_TEMPLATE_CLASSES:
+    sys.stderr.write(f"[vlr-server] event_template.html loaded ({len(_EVENT_TEMPLATE_CLASSES)} classes)\n")
+else:
+    sys.stderr.write("[vlr-server] event_template.html not found — using built-in whitelist\n")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -232,14 +254,20 @@ def _fallback_clean(html: str) -> str:
 
 def _detect_page_type(resource_id: str, html: str) -> str:
     """
-    Heuristically determine if a resource page is a 'match', 'forum', or 'team' type.
+    Heuristically determine if a resource page is a 'match', 'forum', 'team', 'news', or 'player' type.
     """
+    if "player-header" in html or "player-real-name" in html:
+        return "player"
+    if "article-body" in html or "article-header" in html:
+        return "news"
     if "vm-stats" in html or "match-header" in html:
         return "match"
     if "post-body" in html or "thread-header" in html or "post-content" in html:
         return "forum"
     if "team-header" in html or "team-roster-item" in html:
         return "team"
+    if "event-header" in html or "wf-ptable" in html:
+        return "event"
     return "unknown"
 
 
@@ -258,7 +286,19 @@ def _clean_resource(html: str, resource_id: str) -> str:
         return _whitelist_clean(html, whitelist)
     elif page_type == "team":
         whitelist = _TEAM_TEMPLATE_CLASSES or TEAM_PAGE_WHITELIST
+        combined = list(set(whitelist + ["wf-module-item", "team-event-item"]))
+        return _whitelist_clean(html, combined)
+    elif page_type == "event":
+        whitelist = _EVENT_TEMPLATE_CLASSES or EVENT_PAGE_WHITELIST
         return _whitelist_clean(html, whitelist)
+    elif page_type == "player":
+        return _whitelist_clean(html, PLAYER_PAGE_WHITELIST)
+    elif page_type == "news":
+        whitelist = _FORUM_TEMPLATE_CLASSES or NEWS_PAGE_WHITELIST
+        # Fallback to FORUM template classes if present, otherwise use strict news whitelist
+        # We append news-specific classes ensuring they aren't stripped if using forum template
+        combined = list(set(whitelist + NEWS_PAGE_WHITELIST))
+        return _whitelist_clean(html, combined)
     else:
         return _fallback_clean(html)
 
@@ -267,6 +307,10 @@ async def _fetch(url: str) -> str:
     """Perform a GET request scoped strictly to vlr.gg."""
     if not url.startswith(BASE_URL):
         raise PermissionError(f"Request blocked: URL {url!r} is outside vlr.gg scope.")
+        
+    sys.stderr.write(f"[vlr-server] Fetching URL: {url}\n")
+    sys.stderr.flush()
+    
     async with httpx.AsyncClient(
         headers=HEADERS, timeout=TIMEOUT, follow_redirects=True
     ) as client:
@@ -384,18 +428,153 @@ def _parse_thread_list(html: str, page: int) -> str:
     return "\n".join(lines)
 
 
+def _parse_search_list(html: str, query: str) -> str:
+    """
+    Parse a vlr.gg search page into structured lines.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    items = soup.find_all("a", class_=re.compile(r"search-item"))
+    lines: list[str] = [f"[VLR Search Results for '{query}']",
+                        "Use IDs below with get_vlr_resource (for matches/threads/events) or get_vlr_team / get_vlr_player.",
+                        ""]
+
+    for item in items:
+        href = item.get("href", "")
+        # e.g. /search/r/player/9/idx
+        m = re.search(r"/(player|team|event|match)/(\d+)", href)
+        if not m:
+            continue
+        item_type = m.group(1)
+        item_id = m.group(2)
+
+        # Title
+        title_el = item.find("div", class_=re.compile(r"search-item-title"))
+        title = _text(title_el) if title_el else _text(item)
+
+        # Desc
+        desc_el = item.find("div", class_=re.compile(r"search-item-desc"))
+        desc = _text(desc_el) if desc_el else ""
+
+        parts: list[str] = [f"[{item_type.capitalize()} ID: {item_id}] {title}"]
+        if desc:
+            parts.append(desc)
+
+        lines.append(" | ".join(parts))
+
+    if len(lines) == 3:
+        lines.append("(No results found)")
+    return "\n".join(lines)
+
+
+def _parse_event_list(html: str, page: int) -> str:
+    """
+    Parse a vlr.gg events page into structured lines.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    items = soup.find_all("a", class_=re.compile(r"event-item"))
+    lines: list[str] = [f"[VLR Events — Page {page}]",
+                        "Use IDs below with get_vlr_event for full event details.",
+                        ""]
+
+    for item in items:
+        href = item.get("href", "")
+        event_id = _extract_id_from_href(href)
+        if not event_id:
+            continue
+
+        title_el = item.find("div", class_=re.compile(r"event-item-title"))
+        title = _text(title_el) if title_el else "Untitled Event"
+
+        status_el = item.find(class_=re.compile(r"event-item-desc-item-status"))
+        status = _text(status_el) if status_el else ""
+
+        prize_el = item.find("div", class_=re.compile(r"mod-prize"))
+        prize = _text(prize_el).replace("Prize Pool", "").strip() if prize_el else ""
+
+        dates_el = item.find("div", class_=re.compile(r"mod-dates"))
+        dates = _text(dates_el).replace("Dates", "").strip() if dates_el else ""
+
+        parts: list[str] = [f"[ID: {event_id}] {title}"]
+        if status:
+            parts.append(f"Status: {status}")
+        if dates:
+            parts.append(f"Dates: {dates}")
+        if prize:
+            parts.append(f"Prize: {prize}")
+
+        lines.append(" | ".join(parts))
+
+    if len(lines) == 3:
+        lines.append("(No events found on this page)")
+    return "\n".join(lines)
+
+
+def _parse_entity_matches_list(html: str, page: int, entity_id: str, is_player: bool = False) -> str:
+    """
+    Parse a vlr.gg team or player matches page into structured lines.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    items = soup.find_all("a", class_=re.compile(r"m-item"))
+    label = "Player" if is_player else "Team"
+    lines: list[str] = [f"[VLR {label} {entity_id} Matches — Page {page}]",
+                        "Use IDs below with get_vlr_resource for full match details.",
+                        ""]
+
+    for item in items:
+        if "m-item-games-item" in item.get("class", []):
+            continue
+
+        href = item.get("href", "")
+        match_id = _extract_id_from_href(href)
+        if not match_id:
+            continue
+
+        team_els = item.find_all(class_=re.compile(r"m-item-team-name"))
+        teams = [_text(t) for t in team_els if _text(t)]
+        matchup = " vs ".join(teams) if teams else "TBD vs TBD"
+
+        result_el = item.find(class_=re.compile(r"m-item-result"))
+        if result_el:
+            spans = result_el.find_all("span")
+            scores = [_text(s) for s in spans if _text(s)]
+            score_str = "-".join(scores) if scores else ""
+        else:
+            score_str = ""
+
+        event_el = item.find(class_=re.compile(r"m-item-event"))
+        event = " ".join(_text(event_el).split())
+
+        date_el = item.find(class_=re.compile(r"m-item-date"))
+        date = _text(date_el)
+
+        parts: list[str] = [f"[ID: {match_id}] {matchup}"]
+        if score_str:
+            parts.append(f"Score: {score_str}")
+        if event:
+            parts.append(event)
+        if date:
+            parts.append(date)
+
+        lines.append(" | ".join(parts))
+
+    if len(lines) == 3:
+        lines.append(f"(No matches found on this page)")
+    return "\n".join(lines)
+
+
 # ── Tool Registry ─────────────────────────────────────────────────────────────
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
-            name="list_vlr_matches",
+            name="list_matches",
             description=(
-                "Browse upcoming and live Valorant esports matches from vlr.gg. "
-                "Returns structured entries with team names, status, event, and a numeric ID. "
-                "IMPORTANT: To investigate a specific match, pass its ID to get_vlr_resource. "
-                "Use this tool first to DISCOVER matches before reading full details."
+                "Browse a paginated list of matches (upcoming, live, or completed) across the entire vlr.gg database. "
+                "You can optionally filter by 'status' (upcoming / results), or provide exactly one "
+                "of 'team_id', 'player_id', or 'event_id' to list matches for that specific entity. "
+                "Returns structured entries with match IDs, scores, events/teams and dates. "
+                "IMPORTANT: To investigate a specific match, pass its ID to get_vlr_resource."
             ),
             inputSchema={
                 "type": "object",
@@ -405,6 +584,24 @@ async def list_tools() -> list[types.Tool]:
                         "description": "Pagination page number (default: 1, must be >= 1).",
                         "default": 1,
                         "minimum": 1,
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Filter matches by status ('upcoming' or 'results'). Works globally and across entity filters.",
+                        "enum": ["upcoming", "results"],
+                        "default": "upcoming"
+                    },
+                    "team_id": {
+                        "type": "string",
+                        "description": "Numeric ID of a team to filter their matches exclusively.",
+                    },
+                    "player_id": {
+                        "type": "string",
+                        "description": "Numeric ID of a player to filter their matches exclusively.",
+                    },
+                    "event_id": {
+                        "type": "string",
+                        "description": "Numeric ID of an event to filter its matches exclusively.",
                     }
                 },
                 "required": [],
@@ -432,14 +629,59 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="list_vlr_results",
+            name="get_vlr_resource",
             description=(
-                "Browse historical Valorant esports match results from vlr.gg. "
-                "Returns structured entries with team names, final score, event name, "
-                "match date, and a numeric ID per match. "
-                "IMPORTANT: To investigate a specific result in detail (maps, stats, VODs), "
-                "pass its ID to get_vlr_resource. "
-                "Use this tool to DISCOVER past results before fetching full match data."
+                "Fetch the full content of a specific vlr.gg entity. "
+                "Uses reference-based whitelist sanitization to return ultra-clean, "
+                "structured text for agent reasoning. "
+                "Provide EXACTLY ONE of the id parameters depending on the target type."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "resource_id": {
+                        "type": "string",
+                        "description": "Numeric ID for a match, forum thread, or news article.",
+                    },
+                    "team_id": {
+                        "type": "string",
+                        "description": "Numeric ID for a team profile.",
+                    },
+                    "player_id": {
+                        "type": "string",
+                        "description": "Numeric ID for a player profile.",
+                    },
+                    "event_id": {
+                        "type": "string",
+                        "description": "Numeric ID for an event/tournament overview.",
+                    }
+                },
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="search_vlr",
+            description=(
+                "Search vlr.gg for terms like players, teams, or events. "
+                "Returns structured entries with type (Player, Team, Event, Match) and ID."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search term (e.g. 'tenz').",
+                    }
+                },
+                "required": ["query"],
+            },
+        ),
+        types.Tool(
+            name="list_vlr_events",
+            description=(
+                "Browse ongoing and upcoming Valorant esports events. "
+                "Returns structured entries with event titles, status, dates, and a numeric ID. "
+                "IMPORTANT: To read full event details (standings, brackets), pass its ID to get_vlr_resource."
             ),
             inputSchema={
                 "type": "object",
@@ -454,49 +696,6 @@ async def list_tools() -> list[types.Tool]:
                 "required": [],
             },
         ),
-        types.Tool(
-            name="get_vlr_resource",
-            description=(
-                "Fetch the full content of a specific vlr.gg match page or forum thread. "
-                "Uses reference-based whitelist sanitization to return ultra-clean, "
-                "structured text for agent reasoning. "
-                "IMPORTANT: Obtain the resource_id from list_vlr_matches, "
-                "list_vlr_threads, or list_vlr_results first."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "resource_id": {
-                        "type": "string",
-                        "description": (
-                            "Numeric ID of the vlr.gg resource (e.g. '12345'). "
-                            "Digits only. Obtain from list_vlr_matches, "
-                            "list_vlr_threads, or list_vlr_results."
-                        ),
-                    }
-                },
-                "required": ["resource_id"],
-            },
-        ),
-        types.Tool(
-            name="get_vlr_team",
-            description=(
-                "Fetch the roster, recent form, and upcoming matches for a specific VCT team. "
-                "Returns clean, structured text based on the team's profile page. "
-                "IMPORTANT: To find a team_id, you must first read a match page using get_vlr_resource "
-                "and look for the '[Team ID: XXX]' tags next to the team names."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "team_id": {
-                        "type": "string",
-                        "description": "Numeric ID of the VCT team (e.g. '490'). Digits only.",
-                    }
-                },
-                "required": ["team_id"],
-            },
-        ),
     ]
 
 
@@ -505,50 +704,112 @@ async def list_tools() -> list[types.Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     try:
-        if name == "list_vlr_matches":
+        if name == "list_matches":
             page = _validate_page(int(arguments.get("page", 1)))
-            url = f"{BASE_URL}/matches/?page={page}"
-            html = await _fetch(url)
-            text = _parse_match_list(html, page, "Matches")
-            return [types.TextContent(type="text", text=text)]
+            team_id = arguments.get("team_id")
+            player_id = arguments.get("player_id")
+            event_id = arguments.get("event_id")
+            status = arguments.get("status", "upcoming")
+
+            # Validate exclusive filtering
+            entities = [eid for eid in (team_id, player_id, event_id) if eid]
+            if len(entities) > 1:
+                raise ValueError("You must not provide more than one of team_id, player_id, or event_id.")
+
+            group_param = "completed" if status == "results" else "upcoming"
+
+            if team_id:
+                tid = _validate_resource_id(team_id)
+                url = f"{BASE_URL}/team/matches/{tid}/?page={page}&group={group_param}"
+                html = await _fetch(url)
+                text = _parse_entity_matches_list(html, page, tid, is_player=False)
+            elif player_id:
+                pid = _validate_resource_id(player_id)
+                url = f"{BASE_URL}/player/matches/{pid}/?page={page}&group={group_param}"
+                html = await _fetch(url)
+                text = _parse_entity_matches_list(html, page, pid, is_player=True)
+            elif event_id:
+                eid = _validate_resource_id(event_id)
+                url = f"{BASE_URL}/event/matches/{eid}/?page={page}&group={group_param}"
+                html = await _fetch(url)
+                text = _parse_match_list(html, page, f"Event {eid} Matches ({status})")
+            else:
+                if status == "results":
+                    url = f"{BASE_URL}/matches/results/?page={page}"
+                    html = await _fetch(url)
+                    text = _parse_match_list(html, page, "Results")
+                else:
+                    url = f"{BASE_URL}/matches/?page={page}"
+                    html = await _fetch(url)
+                    text = _parse_match_list(html, page, "Upcoming/Live")
+            
+            return [types.TextContent(type="text", text=f"[Source: {url}]\n" + text)]
 
         elif name == "list_vlr_threads":
             page = _validate_page(int(arguments.get("page", 1)))
             url = f"{BASE_URL}/threads/?page={page}"
             html = await _fetch(url)
             text = _parse_thread_list(html, page)
-            return [types.TextContent(type="text", text=text)]
-
-        elif name == "list_vlr_results":
-            page = _validate_page(int(arguments.get("page", 1)))
-            url = f"{BASE_URL}/matches/results/?page={page}"
-            html = await _fetch(url)
-            text = _parse_match_list(html, page, "Results")
-            return [types.TextContent(type="text", text=text)]
+            return [types.TextContent(type="text", text=f"[Source: {url}]\n" + text)]
 
         elif name == "get_vlr_resource":
-            raw_id = arguments.get("resource_id", "")
-            resource_id = _validate_resource_id(raw_id)
-            url = f"{BASE_URL}/{resource_id}"
+            resource_id = arguments.get("resource_id", "")
+            team_id = arguments.get("team_id", "")
+            player_id = arguments.get("player_id", "")
+            event_id = arguments.get("event_id", "")
+
+            # Validate exclusive ID parameter
+            entities = [eid for eid in (resource_id, team_id, player_id, event_id) if eid]
+            if len(entities) != 1:
+                raise ValueError("You must provide exactly one of resource_id, team_id, player_id, or event_id.")
+
+            if team_id:
+                target_id = _validate_resource_id(team_id)
+                url = f"{BASE_URL}/team/{target_id}"
+                label = "Team Profile"
+            elif player_id:
+                target_id = _validate_resource_id(player_id)
+                url = f"{BASE_URL}/player/{target_id}"
+                label = "Player Profile"
+            elif event_id:
+                target_id = _validate_resource_id(event_id)
+                url = f"{BASE_URL}/event/{target_id}"
+                label = "Event Details"
+            else:
+                target_id = _validate_resource_id(resource_id)
+                url = f"{BASE_URL}/{target_id}"
+                label = "Resource"
+
             html = await _fetch(url)
-            text = _clean_resource(html, resource_id)
+            text = _clean_resource(html, target_id)
+            
+            # Additional hint text for template status
             template_note = ""
-            if _MATCH_TEMPLATE_CLASSES or _FORUM_TEMPLATE_CLASSES:
+            if event_id and _EVENT_TEMPLATE_CLASSES:
                 template_note = " [whitelist from template]"
-            header = f"[VLR Resource — ID {resource_id}{template_note}]\n\n"
+            elif team_id and _TEAM_TEMPLATE_CLASSES:
+                template_note = " [whitelist from template]"
+            elif not event_id and not team_id and (_MATCH_TEMPLATE_CLASSES or _FORUM_TEMPLATE_CLASSES):
+                template_note = " [whitelist from template]"
+                
+            header = f"[Source: {url}]\n[VLR {label} — ID {target_id}{template_note}]\n\n"
             return [types.TextContent(type="text", text=header + text)]
 
-        elif name == "get_vlr_team":
-            raw_id = arguments.get("team_id", "")
-            team_id = _validate_resource_id(raw_id)
-            url = f"{BASE_URL}/team/{team_id}"
+        elif name == "search_vlr":
+            query = arguments.get("query", "").strip()
+            if not query:
+                raise ValueError("Search query cannot be empty.")
+            url = f"{BASE_URL}/search/?q={urllib.parse.quote(query)}"
             html = await _fetch(url)
-            text = _clean_resource(html, team_id)
-            template_note = ""
-            if _TEAM_TEMPLATE_CLASSES:
-                template_note = " [whitelist from template]"
-            header = f"[VLR Team Profile — ID {team_id}{template_note}]\n\n"
-            return [types.TextContent(type="text", text=header + text)]
+            text = _parse_search_list(html, query)
+            return [types.TextContent(type="text", text=f"[Source: {url}]\n" + text)]
+
+        elif name == "list_vlr_events":
+            page = _validate_page(int(arguments.get("page", 1)))
+            url = f"{BASE_URL}/events/?page={page}"
+            html = await _fetch(url)
+            text = _parse_event_list(html, page)
+            return [types.TextContent(type="text", text=f"[Source: {url}]\n" + text)]
 
         else:
             raise ValueError(f"Unknown tool: {name!r}")

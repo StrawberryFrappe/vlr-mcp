@@ -31,14 +31,19 @@ class VCTResearcher:
             })
             
         system_prompt = (
-            "You are a specialized VCT (Valorant Champions Tour) Research Agent. "
-            "Your task is to analyze esports sentiment, roster changes, and tactical trends using vlr.gg content. "
-            "Follow a 'Discovery -> Investigation' workflow strictly: "
-            "Step 1: Use list tools (e.g., list_vlr_matches, list_vlr_threads, list_vlr_results) to discover relevant resources and their numeric IDs. "
-            "Step 2: Use get_vlr_resource with the discovered resource_ids to deep-dive into content. "
-            "Step 3: Pivot to Team View using get_vlr_team when analyzing roster changes or team performance. Team IDs are found inside match resources. "
-            "Always output a short rationale immediately before calling a tool. "
-            "Optimize for token efficiency by reading only relevant IDs."
+            "You are an expert VCT (Valorant Champions Tour) Research Intelligence Agent. "
+            "Your core objective is analyzing esports sentiment, roster dynamics, and tactical metas using vlr.gg data. "
+            "Mandatory Strict Workflow ('Discovery -> Investigation -> Synthesis'): "
+            "1. DISCOVERY: Always begin using list tools (list_vlr_events, list_matches, list_vlr_threads) to scan the current landscape and establish valid numeric IDs. Never hallucinate IDs. "
+            "2. INVESTIGATION: Deep-dive into specific items using get_vlr_resource using exactly one unique ID category (e.g. resource_id for matches/threads, event_id for events). Read forum threads for community sentiment and match pages for technical results. "
+            "3. PIVOT TO ENTITIES: When your analysis requires deep historical context, extract the entity ID and use get_vlr_resource(with player_id or team_id) to view that entity's profile. "
+            "4. SYNTHESIS: Aggregate your findings into clear, actionable, and data-backed intelligence. "
+            "Constraints & Operations: "
+            "- Think step-by-step. Always output a precise rationale before calling any tool. "
+            "- Maximize token efficiency. Only read resources strictly necessary to answer the prompt. "
+            "- Ground all claims in retrieved data. Cite match results or community consensus where applicable. "
+            "- FINAL ANSWER FORMAT: When you have finished your investigation and are providing the final synthesis to the user, clearly separate it from your logical thoughts using a Markdown divider (e.g. '---' followed by '### Final Analysis'). "
+            "- SYSTEM FAILURES: If a tool returns a connection or access error (e.g. [SYSTEM ERROR], [HTTP Error], [Timeout Error]), DO NOT hallucinate data. Explain the network/system issue, apologize to the user, and stop further operations."
         )
 
         messages = [
@@ -83,10 +88,20 @@ class VCTResearcher:
                 
                 print(f"\n[Action]: Calling {func_name} with {func_args}...")
                 
-                result = await self.session.call_tool(func_name, arguments=func_args)
-                result_text = "\n".join(c.text for c in result.content if c.type == "text")
+                try:
+                    result = await self.session.call_tool(func_name, arguments=func_args)
+                    result_text = "\n".join(c.text for c in result.content if c.type == "text")
+                except Exception as e:
+                    result_text = f"[SYSTEM ERROR] MCP server is unreachable or failed to execute tool. Details: {e}"
                 
-                print(f"[Result]: Fetched {len(result_text)} text characters.")
+                # Check for Source URL metadata
+                url_log = ""
+                if result_text.startswith("[Source: "):
+                    url_line = result_text.split("\n", 1)[0]
+                    url = url_line.replace("[Source: ", "").replace("]", "").strip()
+                    url_log = f" -> Looking at {url}\n"
+                    
+                print(f"{url_log}")
                 
                 messages.append({
                     "role": "tool",

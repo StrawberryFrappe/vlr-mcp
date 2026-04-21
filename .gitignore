@@ -1,9 +1,17 @@
 # HTML Templates and Assets
+templates/
 *_template.html
-*_template_files/
 
 # Python / Environment
 __pycache__/
 *.pyc
 .venv/
 .env
+
+# IDEs
+.vscode/
+.idea/
+.vs/
+
+# Logs
+*.log
