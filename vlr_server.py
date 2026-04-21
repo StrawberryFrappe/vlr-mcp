@@ -310,7 +310,19 @@ async def _fetch(url: str) -> str:
         
     sys.stderr.write(f"[vlr-server] Fetching URL: {url}\n")
     sys.stderr.flush()
-    
+
+    if os.environ.get("VLR_SIMULATE_TIMEOUT") == "1":
+        sys.stderr.write("[vlr-server] SIMULATING TIMEOUT...\n")
+        raise httpx.ConnectTimeout("Simulated connection timeout to vlr.gg")
+
+    if os.environ.get("VLR_SIMULATE_ERROR") == "1":
+        sys.stderr.write("[vlr-server] SIMULATING 503 ERROR...\n")
+        raise httpx.HTTPStatusError(
+            "Simulated 503 Service Unavailable",
+            request=httpx.Request("GET", url),
+            response=httpx.Response(503, content=b"Server Down")
+        )
+
     async with httpx.AsyncClient(
         headers=HEADERS, timeout=TIMEOUT, follow_redirects=True
     ) as client:
@@ -574,7 +586,8 @@ async def list_tools() -> list[types.Tool]:
                 "You can optionally filter by 'status' (upcoming / results), or provide exactly one "
                 "of 'team_id', 'player_id', or 'event_id' to list matches for that specific entity. "
                 "Returns structured entries with match IDs, scores, events/teams and dates. "
-                "IMPORTANT: To investigate a specific match, pass its ID to get_vlr_resource."
+                "IMPORTANT: To investigate a specific match, pass its ID to get_vlr_resource. "
+                "NOTE: Players do not have upcoming matches. If using 'player_id', you MUST set 'status' to 'results'."
             ),
             inputSchema={
                 "type": "object",
@@ -715,6 +728,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             entities = [eid for eid in (team_id, player_id, event_id) if eid]
             if len(entities) > 1:
                 raise ValueError("You must not provide more than one of team_id, player_id, or event_id.")
+
+            if player_id and status == "upcoming":
+                raise ValueError("Players do not have upcoming matches. You MUST set status='results' when filtering by player_id.")
 
             group_param = "completed" if status == "results" else "upcoming"
 

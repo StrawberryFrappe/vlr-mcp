@@ -1,14 +1,30 @@
+import os
 import sys
+import argparse
 import asyncio
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.session import ClientSession
 from vct_researcher import VCTResearcher
 
 async def start_demo():
+    parser = argparse.ArgumentParser(description="VCT Research Agent Demo")
+    parser.add_argument("--simulate-timeout", action="store_true", help="Simulate a vlr.gg connection timeout")
+    parser.add_argument("--simulate-error", action="store_true", help="Simulate a 503 vlr.gg server error")
+    args = parser.parse_args()
+
     print("Starting VLR.gg MCP Server subprocess...")
+    env = os.environ.copy()
+    if args.simulate_timeout:
+        env["VLR_SIMULATE_TIMEOUT"] = "1"
+        print(" -> Simulation enabled: TIMEOUT")
+    if args.simulate_error:
+        env["VLR_SIMULATE_ERROR"] = "1"
+        print(" -> Simulation enabled: 503 ERROR")
+
     server_params = StdioServerParameters(
         command=sys.executable,
-        args=["vlr_server.py"]
+        args=["vlr_server.py"],
+        env=env
     )
     
     async with stdio_client(server_params) as (read_stream, write_stream):
