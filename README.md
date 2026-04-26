@@ -1,62 +1,57 @@
-# VLR.gg MCP Server
+# VCT Research Agent
 
-Browse and extract vlr.gg content inside Antigravity.
-
----
-
-## 1. Install Dependencies
-
-```powershell
-cd h:\mcp\vlr
-pip install -r requirements.txt
-```
+Terminal-based AI for Valorant Champions Tour intelligence.
+Browses vlr.gg autonomously to analyze rosters and sentiment.
 
 ---
 
-## 2. Add to Antigravity (mcp_config.json)
+## Quick Start
 
-Open your Antigravity MCP config file.  
-Location: `C:\Users\<you>\.gemini\mcp_config.json`
+1. **Install dependencies**
+   ```powershell
+   pip install -r requirements.txt
+   ```
 
-Add this entry inside the `"mcpServers"` object:
+2. **Set API Key**
+   Create a `.env` file with:
+   `DEEPSEEK_API_KEY=your_key_here`
+
+3. **Run the Agent**
+   ```powershell
+   python run_vct_demo.py
+   ```
+
+---
+
+## Agent Workflow
+
+1. **Discovery**: Scans events and matches for valid IDs.
+2. **Investigation**: Reads threads and match data for context.
+3. **Synthesis**: Generates data-backed intelligence reports.
+
+---
+
+## Antigravity Integration (MCP)
+
+Add this to your `mcp_config.json` to use tools directly:
 
 ```json
 {
   "mcpServers": {
     "vlr-gg": {
       "command": "python",
-      "args": ["-u", "h:\\mcp\\vlr\\vlr_server.py"],
-      "env": {}
+      "args": ["-u", "h:\\mcp\\vlr\\vlr_server.py"]
     }
   }
 }
 ```
 
-> **Note**: The `-u` flag forces unbuffered I/O. Required on Windows to prevent pipe deadlocks.
-
-
-## 3. Available Tools
-
-| Tool | Description | Key Parameter |
-|---|---|---|
-| `list_matches` | Discover matches globally or by entity | `page`, `status`, `team_id`, `player_id`, `event_id` |
-| `list_vlr_events` | List ongoing and upcoming events | `page` |
-| `list_vlr_threads` | List recent forum threads | `page` |
-| `get_vlr_resource` | Fetch full context of an entity (match, thread, team, player, event) | `resource_id`, `team_id`, `player_id`, `event_id` |
-| `search_vlr` | Search for players, teams, or events | `query` |
-
 ---
 
-## 5. Example Agent Flow
+## Available Tools
 
-1. Call `list_matches` to discover match IDs.
-2. Call `get_vlr_resource` with a specific ID (`resource_id` etc) for full content.
-3. Perform sentiment analysis or summarization on the result.
-
----
-
-## Security Notes
-
-- All requests are strictly scoped to `https://www.vlr.gg`.
-- `resource_id` accepts digits only — no path traversal possible.
-- Page numbers are validated as positive integers.
+- `list_matches`: Discover ongoing and upcoming matches.
+- `list_vlr_events`: Browse tournament brackets and standings.
+- `get_vlr_resource`: Fetch full content for any entity.
+- `search_vlr`: Find specific players or teams.
+- `list_vlr_threads`: Monitor community forum sentiment.
