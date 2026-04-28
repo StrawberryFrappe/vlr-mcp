@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import asyncio
+import config
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.session import ClientSession
 from vct_researcher import VCTResearcher
@@ -36,7 +37,7 @@ async def start_demo():
             
             print("\n" + "="*50)
             print(" VCT Research Agent Demo")
-            print(" Using DeepSeek + VLR.gg MCP integration")
+            print(f" Using {config.MODEL} + VLR.gg MCP integration")
             print("="*50)
             
             while True:
