@@ -50,6 +50,14 @@ class VCTResearcher:
                 print(f"\n[Agent]: {message.content}")
             
             assistant_msg = {"role": "assistant", "content": message.content or ""}
+            
+            reasoning_content = getattr(message, "reasoning_content", None)
+            if not reasoning_content and hasattr(message, "model_extra") and message.model_extra:
+                reasoning_content = message.model_extra.get("reasoning_content")
+                
+            if reasoning_content:
+                assistant_msg["reasoning_content"] = reasoning_content
+                
             if message.tool_calls:
                 assistant_msg["tool_calls"] = [
                     {

@@ -1,6 +1,6 @@
 # Configuration settings for the VCT Research Agent
 
-MODEL = "deepseek-v4-pro"
+MODEL = "deepseek-v4-flash"
 TEMPERATURE = 0.3
 BASE_URL = "https://api.deepseek.com"
 MAX_TOKENS_PER_MESSAGE = 16000
